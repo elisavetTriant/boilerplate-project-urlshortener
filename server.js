@@ -24,23 +24,24 @@ try {
 }
 
 //Connect to the db
-mongoose.connect(db, { useNewUrlParser: true, useUnifiedTopology: true });
+mongoose.connect(db, { useNewUrlParser: true, useUnifiedTopology: true, autoIndex: false});
 
 //Create schema
 const Schema = mongoose.Schema;
 const urlSchema = new Schema({
   original_url: {
     type: String,
-    index: true,
     unique: true
   },
   short_url: {
     type: String,
     unique: true,
-    index: true, // TODO see why it's deprecated
     default: () => nanoid()
   }
 });
+
+//Creating compound index - schema wide
+urlSchema.index({ original_url: 1, short_url: 1 });
 
 //Create model
 const Url = mongoose.model("Url", urlSchema);
@@ -76,61 +77,51 @@ app.get("/api/is-mongoose-ok", function (req, res) {
   }
 });
 
-//POST endpoint TODO rewrite with try-catch
 app.post("/api/shorturl", function (req, res, next) {
   let t = setTimeout(() => {
     next({ message: "timeout" });
   }, TIMEOUT);
-  
-  testUrlAddress = req.body.url
 
-  if (validate({website: testUrlAddress }, {website: {url: true}}) === undefined){
-    
-    const urlObject = new URL(testUrlAddress);
-    
+  const urlToTest = req.body.url;
+
+  try {
+    //TODO evaluate other libraries for validation
+    if (validate({website: urlToTest }, {website: {url: true}}) !== undefined)        throw new Error('Invalid URL');
+
+    const urlObject = new URL(urlToTest);
+
     dns.lookup(urlObject.hostname, (err, address, family) => {
-    if (err) {
-       res.status(200).json({ error: 'invalid url' });
-    } else {
-      if (mongoose && mongoose.connection.readyState) {     
-      const testUrlDocument = new Url({'original_url': testUrlAddress});
-      
-      Url.exists({original_url:testUrlAddress}, function (err, docExists) {
-          if (err) return console.log(err)
-            
-            if (!docExists) { //create new record
-              testUrlDocument.save(function(err, data){
-                if (err) return console.error(err);
-                //no error here, continue with logic
-                //get the id of the record we just created
-                  const {original_url, short_url, ...rest} = data;
-                  res.status(200).json({ original_url : original_url, short_url: short_url });
-                })
-
-            } else { //Fetch existing         
-              Url.findOne({original_url : testUrlAddress}, function(err, urlRetreived){
-                if(err) return console.log(err);
-                const {original_url, short_url, ...rest} = urlRetreived;
-                res.status(200).json({ original_url : original_url, short_url : short_url });
-              })
-            }
+      if (err) throw err;
+    
+      if (mongoose && mongoose.connection.readyState) {
+        Url.findOne({original_url: urlToTest})
+        .then(urlFound => {
+          if (urlFound) return urlFound; //is there one in the database? Return
+          return Url.create({'original_url': urlToTest}); //continue with saving the record
         })
+        .then(url => {
+          const {original_url, short_url} = url;
+
+          res.status(200).json({ original_url : original_url, short_url : short_url });
+        })
+        .catch(err => res.status(200).json({ error: err.message }));
+
       } else {
-      res.status(200).json({ error: 'Could not connect to the database.' });
+        throw new Error('Could not connect to the database.');
       }
-    }
-  })
-  }else {
-     res.status(200).json({ error: 'invalid url' });
+    })
+  }catch (error) {
+    console.log(error);
+    res.status(200).json({ error: error.message });
   }
   
 });
 
 app.get('/api/shorturl/:url', (req, res, next) => {
-  const url = req.params.url;
+  const { url } = req.params;
   Url.findOne({ short_url: url })
-  .then((url) => {
-    if (!url) { throw new Error('Url is not found on database'); }
+  .then(url => {
+    if (!url) { throw new Error('Url is not found in database'); }
     res.redirect(url.original_url);
    })
    .catch(err => res.status(200).json({ error: err.message }));
